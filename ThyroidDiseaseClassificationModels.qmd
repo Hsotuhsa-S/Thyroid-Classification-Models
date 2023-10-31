@@ -1,0 +1,1587 @@
+---
+title: "Comparative analysis of Thyroid disease Classification Models"
+author: "Ashutosh Shirsat"
+date: "`r Sys.Date()`"
+format: 
+   pdf:
+    number-sections: true
+    toc: true
+    toc-depth: 2
+    toc-title: Table of Content
+    lof: true
+    lot: true
+
+editor: visual
+---
+
+{{< pagebreak >}}
+
+```{r setup, include=FALSE, echo=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+```{r load-library, echo=FALSE, warning=FALSE, message=FALSE}
+
+library(tidyverse)
+library(ggplot2)
+library(patchwork)
+library(gridExtra)
+library(kableExtra)
+library(gtsummary) 
+library(testthat)  
+library(corrplot)  
+library(caret)     
+library(glmnet)    
+library(pROC)      
+library(kernlab)
+library(randomForest)
+library(MASS)      
+library(e1071)
+
+```
+
+# Introduction
+
+This data science project focuses on analyzing thyroid data from the UCI Machine Learning Repository and developing a 2-class classification prediction model for thyroid disease for early detection and improved patient outcomes in the diagnosis and management of thyroid diseases.
+
+In this project will compare and evaluate three different models, namely Generalized Linear Model (GLM), Support Vector Machines (SVM), and Random Forest (RF), to determine the most suitable model for accurate predictions on this dataset.
+
+**About Thyroid**
+
+• Thyroid gland's job is to produces thyroid hormones that regulates the body's metabolism.
+
+• There are 2 types of thyroid abnormalities Hyperthyroidism and Hypothyroidism.
+
+ Hyperthyroidism is caused by the release of too much thyroid hormones
+
+ Hypothyroidism is caused by release of too little thyroid hormones.
+
+• Thyroid functional test include Thyroid blood test which check hormones i.e. TSH, T3, T4/Free T4 Index(FTI)
+
+**Assumptions :** As there is no information regarding unit of parameters TSH, T3, TT4, T4U and FTI. As per understanding of data value and normal range information from online following units are assumed.
+
+TSH: mlU/L, T3: nmol/L, TT4: nmol/L, T4U: no unit , FTI: nmol/L
+
+**New binary outcome variable 'thyroid':**
+
+The original outcome variable, 'target,' has 32 classes, has been transformed into a binary outcome variable, 'thyroid,' consisting of two classes. This conversion was undertaken to simplify and reduce the complexity of the problem, address imbalanced class issues, and establish a baseline model for potential future research.
+
+A value of 1 indicates the presence of the disease if 'target' had a disease code from 'A' to 'H'; otherwise, the value is 0, indicating the absence of the disease.
+
+```{r readData, echo=FALSE}
+# Read CSV file. 
+rawThyroidData = read.csv("data\\thyroidDF.csv") |> as_tibble()
+
+# Rearrange columns positions.
+rawThyroidData = rawThyroidData |>
+                 dplyr::select(patient_id, age, sex, referral_source, 
+                               everything())
+```
+
+```{r newOutcomeVariable}
+# Function to create new Outcome variable "thyroid"
+create_thyroid_variable = function(rawThyroidData) {
+  disease_code = c("A", "B", "C", "D", "E", "F", "G", "H")
+  modifiedData = rawThyroidData |>
+                 mutate(thyroid = ifelse(grepl(paste(disease_code, 
+                                                     collapse = "|"), 
+                                           target), 1, 0))
+  
+  return(modifiedData)
+}
+# Create new binary Outcome variable i.e. 'thyroid'.
+rawThyroidData = create_thyroid_variable(rawThyroidData) |>
+                 dplyr::select(thyroid, everything())
+```
+
+\clearpage
+
+```{r variableDescription, echo=FALSE,warning=FALSE}
+# Read variable description from Excel.
+var_info = readxl::read_excel("VariableDescription.xlsx")
+
+# Display Variable Description table
+knitr::kable(var_info, booktabs = T, caption = "Variable Description") |>
+kable_styling(latex_options = c("striped", "scale_down")) |>
+column_spec(3, width = "7cm") |>
+column_spec(5, width = "6cm")
+
+```
+
+\clearpage
+
+```{r SaveRawData, echo=FALSE}
+
+# Save pre-process Raw data in project folder '/data' as .RData format.
+save(rawThyroidData, file = "data/rawThyroidData.RData")
+```
+
+# Data Cleanup
+
+Convert category variables to factor.
+
+```{r factor}
+
+# Get vector of column names with type 'character'
+columns_to_convert = names(rawThyroidData)[sapply(rawThyroidData, is.character)]
+
+# Get columns with values 't' and 'f' 
+columns_with_tf = columns_to_convert[!columns_to_convert %in% 
+                                    c("sex", "referral_source", "target", "thyroid")]
+
+# Replace value 't' by 'True' and 'f' by 'False'.
+cleanThyroidData = rawThyroidData |>
+  mutate(dplyr::across( columns_with_tf,
+                 ~ if_else(. == "f", "False", if_else(. == "t", "True", .)))) 
+
+# Convert character attributes to factors with labels
+cleanThyroidData = cleanThyroidData |>
+                     mutate(across(
+                     where(~ is.character(.) && !. %in% 
+                             c("sex", "referral_source", "target", "thyroid")),
+                     ~ as.factor(.)),
+                     sex = factor(sex, 
+                                levels = c("F" , "M"),
+                                labels = c("Female", "Male")),
+                   referral_source = factor(referral_source),
+                   target = factor(target),
+                   thyroid = factor(thyroid,
+                          labels = c("No", "Yes")))
+```
+
+```{r saveCleanData, echo=FALSE}
+# Save pre-process Clean data in project folder '/data' as .RData format.
+save(cleanThyroidData, file = "data/cleanThyroidData.RData")
+```
+
+# Data Pre-Processing
+
+## Missing values
+
+Missing Value General Approach is exclude observation with missing values. As predictor 'TBG' has too many missing values i.e. 96%. Predictor 'TBG' is removed. Predictor 'TBG_measured' is also removed along with 'TBG' as this is a flag for measurement of TBG as per data context and interpretation.
+
+```{r countMissing, echo=FALSE}
+# Count total missing values in each variable of data frame.
+missing_values = cleanThyroidData |>
+                 summarise(across(everything(), ~ sum(is.na(.)))) |>
+                 t()
+```
+
+```{r printTable, echo=FALSE, warning=FALSE}
+# Print total missing values per predictors
+kable(missing_values, booktabs = T, align='c',
+    caption = "Missing values per variable")|>
+    kable_styling(latex_options = c("striped", "HOLD_position", "repeat_header"))
+
+```
+
+```{r missingValueApproach}
+# Remove predictor TBG, TBG_measured and Remove observation with Missing values
+tidyThyroidData = cleanThyroidData  |>
+                  dplyr::select(!c(TBG, TBG_measured)) |>
+                  na.omit()
+```
+
+```{r saveTidyData, echo=FALSE}
+# Save pre-process Tidy data in project folder '/data' as .RData format.
+save(tidyThyroidData, file = "data/tidyThyroidData.RData")
+```
+
+## Outcome variable {#sec-outcomevar}
+
+Due to the imbalanced nature of the outcome variable, the selection of a suitable performance metric is essential for evaluating the predictive model. Accuracy can be misleading when dealing with imbalanced datasets. Therefore, the ROC-AUC metric is chosen over Accuracy for feature selection and Model fitting, as it offers a more robust evaluation, is informative, not affected by the class distribution and provides visual interpretability for the model's performance. See @tbl-outcomeVar
+
+```{r}
+#| label: tbl-outcomeVar
+#| tbl-cap: "Outcome Variable Summary"
+#| echo: false
+
+# Check imbalance in data outcome.
+group_by_outcome_naOmit = tidyThyroidData |>
+                          group_by(thyroid) |> 
+                          summarise( n() )
+
+#Outcome Variable 'thyroid' summary table
+knitr::kable(group_by_outcome_naOmit, booktabs = T,
+             col.names = c("Thyroid disease", "Number of patients")) |>
+kable_styling(latex_options = "hold_position")
+```
+
+## Zero- and Near Zero-Variance Predictors {#sec-znz}
+
+Identifying and removing zero variance predictors is a crucial step in the data pre-processing phase before building models. These uninformative features, characterized by having constant values across the entire dataset, can significantly impact the stability and consistency of many models excluding tree-based models. The concern here is that these predictors may become zero-variance predictors when the data are split into cross-validation sub-samples or that a few samples may have an undue influence on the model.
+
+Predictors "TSH_measured", "T3_measured", "TT4_measured", T4U_measured" and "FTI_measured" are zero variance predictors. See @tbl-znz of Zero and Near Zero variance predictors of category variables and in conjunction with inspection of predictor's frequency table (See @tbl-statSummaryCat and @tbl-statSummaryCat in Appendix @sec-statSummary)
+
+```{r znz_var, echo=FALSE, warning=FALSE}
+
+# look for zero or near zero variance variables in factor variables.
+# Select factor variables.
+znz_var = tidyThyroidData |> 
+          dplyr::select(-thyroid) |>
+          nearZeroVar(names = TRUE, saveMetrics = TRUE) |>
+          rownames_to_column(var="features") |>
+          arrange(freqRatio)
+
+# get zero variances predictors.
+zero_var = znz_var |>
+           filter(zeroVar==TRUE)
+
+# get near zero variances predictors
+near_zero_var = znz_var |>
+         filter(nzv == TRUE) |>
+         filter(zeroVar == FALSE) |>
+         arrange(freqRatio)
+```
+
+```{r}
+#| label: tbl-znz
+#| tbl-cap: "Zero and Near Zero variance predictors"
+#| echo: false
+ 
+# Print Table Zero and near zero variance Predictors
+knitr::kable(bind_rows(zero_var, near_zero_var), booktabs = T, align='c',
+             col.names = c("Features", "Freq Ratio", "Percent Unique", "zeroVar", "nzn"))|>
+    kable_styling(latex_options = c("HOLD_position", "scale_down" ))
+
+```
+
+## Exclude non-informative variables
+
+**Zero variance predictors :** Predictors with zero variance are removed. See table @tbl-znz in section @sec-znz.
+
+**'patient_id' :** It does not contribute to model from context point of view.
+
+**'target' :** As new Outcome variable is drive from this variable. It does not contribute to model.
+
+```{r exclude_zeroVar_TBGmeasured_patID_tagret}
+# Remove zero variance predictors from data set.
+# Remove old outcome var 'target' and predictor 'patient_id'  
+tidyThyroidData = tidyThyroidData |> dplyr::select(!c(patient_id, target)) |>
+                  dplyr::select(-(zero_var$features)) 
+```
+
+## Outliers and Non-Normal Distributions
+
+**Age :** From statistic summary of age, there are implausible values in dataset. Subject's age is above 110 are removed.
+
+**TSH, T3, TT4, T4U and FTI :** These are the functional diagnostic test for Thyroid. Due to limited availability of domain knowledge and the inability to define a plausible range for these variables, outliers in the dataset are retained for the following reasons:
+
+\(1\) Outliers may contain valuable information and removing them without domain knowledge could lead to information loss and model inaccuracy; and
+
+\(2\) Removing outliers could introduce bias and result in an imbalanced outcome variable.
+
+**Transformation to resolved non-normal distribution cause by outliers :** Outliers might be a result of a skewed distribution. Some model are sensitive to outliers, e.g. GLM. Transformation resolves non-normal distributions caused by outliers by reduce skewness and stabilize variation. So sensitivity to outliers in some models, such as GLM, is addressed by transforming predictors. This enhances model robustness and improves overall performance.
+
+After evaluating skewness of these variables, skew or Non-Normal distributed variables TSH, T3, T4U will be log-transformed. Skewness of FTI is increased after log transform. TT4 skewness factor is near 1.0. This is the reason FTI and TT4 are not log transformed. See skewness evaluation in @tbl-skew.
+
+```{r OutlierLogFit, echo=FALSE}
+# Remove Outliers from variable 'age' and log fit TSH, T3, T4U variables
+
+# Age remover above 110 years
+thyroidData = tidyThyroidData |>
+              filter(age < 110)
+
+# Variables to be log-transformed
+log_variables = c("TSH", "T3", "T4U")
+
+# Apply logarithmic transformation to the selected variables
+thyroidData[log_variables] = log(thyroidData[log_variables] + 6.5)
+
+```
+
+```{r boxplot_After_Outlier, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="\\label{box-plots}Log-Transformed Vaiables TSH T3 T4U" }
+
+### Before
+
+# Boxplot of numericVar
+TSH_boxplot_B = ggplot(tidyThyroidData) +
+              geom_boxplot(aes(TSH)) +
+              labs(x=deparse(substitute(TSH)), title = "TSH Before")
+
+# Boxplot of numericVar
+T3_boxplot_B = ggplot(tidyThyroidData) +
+              geom_boxplot(aes(T3)) +
+              labs(x=deparse(substitute(T3)), title = "T3 Before")
+
+# Boxplot of numericVar
+T4U_boxplot_B = ggplot(tidyThyroidData) +
+              geom_boxplot(aes(T4U)) +
+              labs(x=deparse(substitute(T4U)), title = "T4U Before")
+
+
+########
+#After
+#######
+
+# Boxplot of numericVar
+TSH_boxplot = ggplot(thyroidData) +
+              geom_boxplot(aes(TSH)) +
+              labs(x=deparse(substitute(TSH)), title = "TSH After")
+
+# Boxplot of numericVar
+T3_boxplot = ggplot(thyroidData) +
+              geom_boxplot(aes(T3)) +
+              labs(x=deparse(substitute(T3)), title = "T3 After")
+
+# Boxplot of numericVar
+T4U_boxplot = ggplot(thyroidData) +
+              geom_boxplot(aes(T4U)) +
+              labs(x=deparse(substitute(T4U)), title = "T4U After")
+
+
+# Plot graph to compare for Log Transformed variables.
+(TSH_boxplot_B + TSH_boxplot) / (T3_boxplot_B + T3_boxplot) /
+(T4U_boxplot_B + T4U_boxplot) +
+plot_annotation(theme = theme_bw())
+
+```
+
+```{r hist_After_Outlier, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="\\label{Hist-plots}Log-Transformed Vaiables TSH T3 T4U"}
+
+# Histplot of numericVar
+TSH_histplot_B = ggplot(tidyThyroidData) +
+              geom_histogram(aes(TSH)) +
+              labs(x=deparse(substitute(TSH)), title = "TSH Before")
+
+# Histplot of numericVar
+T3_histplot_B = ggplot(tidyThyroidData) +
+              geom_histogram(aes(T3)) +
+              labs(x=deparse(substitute(T3)), title = "T3 Before")
+
+# Histplot of numericVar
+T4U_histplot_B = ggplot(tidyThyroidData) +
+              geom_histogram(aes(T4U)) +
+              labs(x=deparse(substitute(T4U)), title = "T4U Before")
+
+
+########
+#After
+#######
+
+# Histplot of numericVar
+TSH_histplot = ggplot(thyroidData) +
+              geom_histogram(aes(TSH)) +
+              labs(x=deparse(substitute(TSH)), title = "TSH After")
+
+# Histplot of numericVar
+T3_histplot = ggplot(thyroidData) +
+              geom_histogram(aes(T3)) +
+              labs(x=deparse(substitute(T3)), title = "T3 After")
+
+# Histplot of numericVar
+T4U_histplot = ggplot(thyroidData) +
+              geom_histogram(aes(T4U)) +
+              labs(x=deparse(substitute(T4U)), title = "T4U After")
+
+
+# Plot graph to compare for Log Transformed variables.
+(TSH_histplot_B + TSH_histplot) / (T3_histplot_B + T3_histplot) /
+(T4U_histplot_B + T4U_histplot) +
+plot_annotation(theme = theme_bw())
+```
+
+```{r check_skewness}
+#| label: tbl-skew
+#| tbl-cap: "Numerical Variables Skewness"
+#| echo: false
+
+# Check skewness of numerical var before and after outliers approach.
+skewness_check = list(Before = list(TSH = round(skewness(tidyThyroidData$TSH),2),
+                                      T3 = round(skewness(tidyThyroidData$T3),2),
+                                      TT4 = round(skewness(tidyThyroidData$TT4),2),
+                                      T4U = round(skewness(tidyThyroidData$T4U),2),
+                                      FTI = round(skewness(tidyThyroidData$FTI),2)),
+                        After = list(TSH = round(skewness(thyroidData$TSH),2),
+                                      T3 = round(skewness(thyroidData$T3),2),
+                                      TT4 = round(skewness(thyroidData$TT4),2),
+                                      T4U = round(skewness(thyroidData$T4U),2),
+                                      FTI = round(skewness(thyroidData$FTI),2)))
+
+# Convert the nested list to a data frame
+skewness_df <- do.call(rbind, lapply(names(skewness_check), function(x) {
+  data.frame(Row = x, t(skewness_check[[x]]))
+}))
+
+# Print Table
+knitr::kable(skewness_df ,format= "pipe", align = 'c', digits=2)
+
+```
+
+```{r NumVarSummaryReport}
+#| label: tbl-numVarStat
+#| tbl-cap: "Statistic summary of continuous variables after Outliers process"
+#| echo: false
+
+summaryTableBefore =  tidyThyroidData |>
+                     dplyr::select_if(is.numeric) |>
+                     #dplyr::select(-patient_id) |>
+                     pivot_longer(cols=1:6, 
+                                  names_to="Variables", 
+                                  values_to="Values") |>
+                     group_by(Variables) |>
+                     summarise(Min = min(Values), 
+                               Q1st = quantile(Values, p=0.25),
+                               Median = median(Values),
+                               Mean = mean(Values),
+                               Q3rd = quantile(Values, p=0.75),
+                               Max=max(Values) )
+
+
+summaryTableAfter =  thyroidData |>
+                     dplyr::select_if(is.numeric) |>
+                     #dplyr::select(-patient_id) |>
+                     pivot_longer(cols=1:6, 
+                                  names_to="Variables", 
+                                  values_to="Values") |>
+                     group_by(Variables) |>
+                     summarise(Min = min(Values), 
+                               Q1st = quantile(Values, p=0.25),
+                               Median = median(Values),
+                               Mean = mean(Values),
+                               Q3rd = quantile(Values, p=0.75),
+                               Max=max(Values) )
+
+knitr::kable(summaryTableAfter,
+             format= "pipe", align = 'c', digits=2,
+             col.names=c("Variable", "Min","1st qu.","Median",
+                         "Mean","3rd qu.", "Max"))
+
+knitr::kable(summaryTableBefore,
+             format= "pipe", align = 'c', digits=2,
+             col.names=c("Variable", "Min","1st qu.","Median",
+                         "Mean","3rd qu.", "Max"))
+```
+
+```{r NumVarSummaryReportBefore}
+#| label: tbl-numVarStatBefore
+#| tbl-cap: "Statistic summary of continuous variables before Outliers process"
+#| echo: false
+
+# summaryTableBefore =  tidyThyroidData |>
+#                      dplyr::select_if(is.numeric) |>
+#                      #dplyr::select(-patient_id) |>
+#                      pivot_longer(cols=1:6, 
+#                                   names_to="Variables", 
+#                                   values_to="Values") |>
+#                      group_by(Variables) |>
+#                      summarise(Min = min(Values), 
+#                                Q1st = quantile(Values, p=0.25),
+#                                Median = median(Values),
+#                                Mean = mean(Values),
+#                                Q3rd = quantile(Values, p=0.75),
+#                                Max=max(Values) )
+# 
+# knitr::kable(summaryTableBefore,
+#              format= "pipe", align = 'c', digits=2,
+#              col.names=c("Variable", "Min","1st qu.","Median",
+#                          "Mean","3rd qu.", "Max"))
+```
+
+\clearpage
+
+```{r saveData_outlier, echo=FALSE}
+# Save date after outliers treatment in project folder '/data' as .RData format.
+save(thyroidData, file = "data/ThyroidData.RData")
+```
+
+# Exploratory Data Analysis
+
+Exploratory analysis and correlation index shows correlation between following predictors; see @fig-correlationMatrix
+
+1.  The strongest positive correlation is between TT4 and FTI (0.81), indicating a high association between these two variables.
+
+2.  There is a moderate positive correlation between T3 and TT4 (0.55) and between T3 and T4U (0.39).
+
+3.  TSH shows moderate negative correlations with TT4 (-0.41) and T3 (-0.27).
+
+4.  The rest of the correlations are relatively small (absolute values closer to zero), indicating weak or negligible correlations
+
+**Predictor and outcome variable analysis**
+
+```{r Age-Sex-Target, echo=FALSE, fig.cap="\\label{distr-plots}Age Gender distribution"}
+
+# Age Box Plot with Gender
+age_sex_outcome_boxPlot = ggplot(thyroidData) +
+                          geom_boxplot(aes(x=thyroid, y=age, fill=thyroid)) +
+                          facet_grid(~sex) +
+                          labs(title = "Age distribution across Gender, thyroid", y="age (years)" ,tag="A") +
+                          theme_bw()
+
+# Density plot of age
+age_density = ggplot(thyroidData, aes(age, fill=thyroid, color=thyroid)) +
+                    geom_density(alpha = 0.3) +
+                    labs(title = "Age Density", x="age (years)" ,tag="B") 
+
+age_sex_outcome_boxPlot / age_density
+```
+
+```{r TSH-T3-TT4_FTI_Outcome, echo=FALSE, fig.cap="\\label{distr-plots}Scatter Plots distribution TSH,T3, TT4, FTI with Outcome", warning=FALSE, message=FALSE}
+
+#Scatter plot between continues variables T3, TSH, TT4, FTI and outcome variable
+p2 = ggplot(thyroidData,aes(x=T3, y=TSH,color=thyroid)) +
+     geom_point(alpha = .2) + 
+     geom_smooth() + 
+     labs(title = "TSH ~ T3", tag = "A",
+           x = "T3 (nmol/L)" , y = "TSH (mlU/L)" ) +
+     theme(legend.position="none")
+
+p3 = ggplot(thyroidData,aes(x=TT4, y=TSH,color=thyroid)) +
+     geom_point(alpha = .2) +
+     geom_smooth() + 
+     labs(title = "TSH ~ TT4", tag = "B",
+           x = "TT4 (nmol/L)"  )
+
+p4 = ggplot(thyroidData,aes(x=T3, y=TT4,color=thyroid)) +
+     geom_point(alpha = .2) + 
+     geom_smooth() + 
+     labs(title = "TT4 ~ T3", tag = "C",
+           x = "T3 (nmol/L)" , y = "TT4 (nmol/L)" ) + 
+     theme(legend.position="none")
+
+p5 = ggplot(thyroidData,aes(x=TT4, y=FTI,color=thyroid)) +
+     geom_point(alpha = .2) + 
+     geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs")) + 
+     labs(title = "FTI ~ TT4", tag = "D",
+           x = "TT4 (nmol/L)" ) 
+
+(p2 + p3) / (p4 + p5) + 
+  plot_annotation(theme = theme_bw())
+```
+
+```{r TSH-T3-TT4_sex, echo=FALSE, fig.cap="\\label{distr-plots}Scatter plot distribution T3, TSH, TT4, T4U with gender"}
+
+#Scatter plot between continues variables and gender
+
+p2 = ggplot(thyroidData,aes(x=TSH, y=T3,color=sex)) +
+     geom_point(alpha = .2) + 
+     geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs")) + 
+     labs(title = "T3 ~ TSH", tag = "A",
+           x = "TSH (mlU/L)" , y = "T3 (nmol/L)" ) +
+     theme(legend.position="none")
+
+p3 = ggplot(thyroidData,aes(x=TSH, y=TT4,color=sex)) +
+     geom_point(alpha = .2) + 
+     geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs")) + 
+     labs(title = "TT4 ~ TSH", tag = "B",
+           x = "TSH (mlU/L)" , y = "TT4 (nmol/L)" ) 
+
+p4 = ggplot(thyroidData,aes(x=TT4, y=T3,color=sex)) +
+     geom_point(alpha = .2) + 
+     geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs")) + 
+     labs(title = "T3 ~ TT4", tag = "C",
+           x = "TT4 (nmol/L)" , y = "T3 (nmol/L)" ) +
+     theme(legend.position="none")
+
+p5 = ggplot(thyroidData,aes(x=T4U, y=T3,color=sex)) +
+     geom_point(alpha = .2) + 
+     geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs")) + 
+     labs(title = "T3 ~ T4U", tag = "D",
+           x = "T4U" , y = "T3 (nmol/L)" )
+
+(p2 + p3) / (p4 + p5) + 
+  plot_annotation(theme = theme_bw())
+```
+
+\clearpage
+
+```{r}
+#| label: fig-correlationMatrix
+#| fig-cap: "Correlation Matrix" 
+#| echo: false
+#| warning: false
+
+# get all numerical variables
+numericVar = thyroidData |>
+              dplyr::select_if(is.numeric)
+
+# Create a simple correlation matrix with correlation index.
+cor_matrix_numericalVar = cor(numericVar)
+corrplot(cor_matrix_numericalVar, method = "number", type = "lower")
+```
+
+\clearpage
+
+# Feature Selection for GLM and SVM Model
+
+Random Forest has implicit feature selection. GLM and SVM model has no implicit feature selection. For GLM and SVM Model, there are 2 possible methods for feature selection are considered:
+
+1.  Step-wise Subset Selection
+2.  Regularization : a ) Lasso, b) Elastic Net
+
+## Stepwise Subset Selection {#sec-stepwise}
+
+AICstep() and RFE() functions were explored, but both encountered runtime errors with SVM models. AICstep() lacked ROC/AUC metric and built-in cross-validation support. Stepwise selection was not pursued due to these technical constrain and limitations by R functions.
+
+[AICStep() Runtime Error :]{.underline} See the code in Appendix @sec-AICstep_SVM for reproducibility
+
+*"Error in UseMethod("extractAIC") : no applicable method for 'extractAIC' applied to an object of class "c('svm.formula', 'svm')"*
+
+[RFE() Runtime Error]{.underline} : See the code in Appendix @sec-RFESVM for reproducibility.
+
+*"Error in { : task 1 failed -"dim(X) must have a positive length"*
+
+## Regularization
+
+To address limitations of stepwise selection (see @sec-stepwise), evaluated regularization approach using 'caret' and 'glmnet' packages. Observed following benefits over stepwise selections.
+
+-   Feature selection is independent of the model.
+
+-   Allows consistent features for both SVM and GLM models.
+
+-   It offers ROC as performance metric and support for cross validation is in-built.
+
+-   Streamlined and consistent syntax for model fitting.
+
+Based on these finding, regularization method is selected for feature selection. As provides a robust and efficient way to perform feature selection.
+
+Lasso and Elastic Net regularization are performed using package 'glmnet' and 'caret' in following steps;
+
+1\. Perform glmnet() with default automatic lambda generation.\
+2a. Set 'lambda' Grid from values generated in Step 1.\
+2b. Perform caret train() with cross-validation.
+
+### **Resampling** {#sec-resampling}
+
+5-fold cross validation 5 times resampling is used throughout this project due to the imbalanced nature of the outcome variable and a moderate sample size. Although this method helps address class imbalance and provides robust performance evaluation and assess the variance in model performance. However it may require increased computational time and resource utilization.
+
+Stratified Randomization sampling based on Response variable is used. Preserve the response variable class proportion in train and test or cross validation folders dataset same as original dataset.
+
+```{r model_TrainControl}
+# 5-fold cross validation 5 times.
+fitCtrl = trainControl(method = "repeatedcv",
+                       number = 5,
+                       repeats = 5,
+                       classProbs = TRUE,
+                       savePredictions = TRUE,
+                       summaryFunction = twoClassSummary)
+```
+
+### Lasso
+
+```{r lasso_caret_cv_glmnet}
+
+# Step 1: glmnet lasso Model with default lambda generation. Alpha = 1.
+set.seed(12356)
+lasso_glmnet = glmnet(x = model.matrix(thyroid ~ . , thyroidData)[,-1],
+                      y = as.numeric(thyroidData$thyroid),
+                      nlambda = 100, alpha = 1,
+                      family = "binomial")
+
+# Step 2: Set lambda Grid : 
+# get Lambdas from glmnet() and set as grid. Alpha = 1
+lambda_glmnet_lasso = lasso_glmnet$lambda
+grid_lasso = expand.grid(lambda = lambda_glmnet_lasso, alpha = 1)
+
+# Step 3: Perform caret Train. method = "glmnet", metric="ROC".
+# Set caret trainControl with 5-fold cross validation 5 times 
+set.seed(12356)
+lasso_glmnet_cv_caret = train(data = thyroidData, thyroid ~ . ,
+                              method = "glmnet", metric = "ROC",
+                              preProcess = c("center", "scale"),
+                              savePredictions = TRUE,
+                              tuneGrid = grid_lasso,
+                              trControl = fitCtrl)
+```
+
+```{r lasso_caret_cv_varImp, echo=FALSE}
+
+# Extract varImp features from caret train
+# Eliminated features with Overall index is not 0.
+
+lasso_varIMP = varImp(lasso_glmnet_cv_caret)$importance |>
+               rownames_to_column(var="Features") |>
+               arrange(desc(Overall))
+# Eliminated Features
+eliminated_features_lasso_index = varImp(lasso_glmnet_cv_caret)$importance |>
+                                rownames_to_column(var="Features") |>
+                                arrange(desc(Overall)) |>
+                                filter(Overall == 0)
+# Selected Features
+selected_features_lasso_index = varImp(lasso_glmnet_cv_caret)$importance |>
+                                rownames_to_column(var="Features") |>
+                                arrange(desc(Overall)) |>
+                                filter(Overall != 0)
+```
+
+
+### Elastic Net
+
+```{r elasticNet_caret_cv_glmnet}
+
+# Step 1: glmnet elastic Net Model with default lambda generation. Alpha = 0.5.
+set.seed(12356)
+elasticNet_glmnet = glmnet(x = model.matrix(thyroid ~ . , thyroidData)[,-1],
+                          y = as.numeric(thyroidData$thyroid), 
+                          nlambda = 100, alpha = 0.5,
+                          family = "binomial")
+
+# Step 2: Set lambda Grid : 
+# get Lambdas from glmnet() and set as grid. Alpha = 0.5
+lambda_glmnet_elasticNet = elasticNet_glmnet$lambda
+grid_elasticNet = expand.grid(lambda = lambda_glmnet_elasticNet, alpha = 0.5)
+
+# Step 3: Perform caret Train. method = "glmnet", metric="ROC".
+# Set caret trainControl with 5-fold cross validation 5 times 
+
+set.seed(12356)
+elasticNet_glmnet_cv_caret = train(data = thyroidData, thyroid ~ . ,
+                                   method = "glmnet", metric = "ROC",
+                                   preProcess = c("center", "scale"),
+                                   savePredictions = TRUE,
+                                   tuneGrid = grid_elasticNet,
+                                   trControl = fitCtrl)
+```
+
+```{r elasticNet_caret_cv_varImp, echo=FALSE}
+
+# Extract varImp features from caret train
+# Select and eliminated features with Overall index is not 0.
+
+elasticNet_varIMP = varImp(elasticNet_glmnet_cv_caret)$importance |>
+                                       rownames_to_column(var="Features") |>
+                                       arrange(desc(Overall))
+# Eliminated features
+eliminated_features_elasticNet_index = varImp(elasticNet_glmnet_cv_caret)$importance |>
+                                       rownames_to_column(var="Features") |>
+                                       arrange(desc(Overall)) |>
+                                       filter(Overall == 0)
+# Selected features
+selected_features_elasticNet_index = varImp(elasticNet_glmnet_cv_caret)$importance |>
+                                rownames_to_column(var="Features") |>
+                                arrange(desc(Overall)) |>
+                                filter(Overall != 0)
+```
+
+## Lasso vs ElasticNet train Evaluation {#sec-EvaFS}
+
+The performance of Lasso and ElasticNet is evaluated based on the following metrics:
+
+1\. Resampling AUC during cross validation
+
+2\. Important variables index
+
+Evaluation Findings:
+
+-   Lasso has a slightly better AUCs distribution across resampling. (See @fig-FSResampledAUCs)
+
+-   Lasso removes more features (See @tbl-varIMP) , including correlated ones. (See correlation Matrix @fig-correlationMatrix )
+
+When interpretability and a simpler model are of high importance, Lasso could be preferred. However, if multicollinearity is a major concern and preserving correlated features is essential, ElasticNet might be a better choice. Since Lasso increases interpretability and simplifies the model, Lasso is chosen.
+
+```{r dataset_lasso_GLM_SVMFitting}
+# Data set for Model fitting as per Lasso selected features. 
+# Parse the Lasso varIMP$Importance 
+selected_features_lasso = gsub("True|False|Male|Female", "",
+                          selected_features_lasso_index$Features) |> unique()
+
+thyroidData_lasso = thyroidData |> 
+        # Create dummy variables for selected categories of 'referral_source'
+                    mutate(
+                    referral_sourceSVHC = ifelse(referral_source == "SVHC", 1, 0),
+                    referral_sourceSVI = ifelse(referral_source == "SVI", 1, 0)) |>
+                    dplyr::select(thyroid, selected_features_lasso)
+
+```
+
+```{r}
+#| label: fig-lasso_tunning
+#| fig-cap: "Lasso - Hyperparameteres tunning" 
+#| echo: false
+#| warning: false
+
+# Lasso models -Tunning hyperparameteres
+plot(lasso_glmnet_cv_caret)
+```
+
+```{r}
+#| label: fig-elasticnet_tunning
+#| fig-cap: "ElasticNet - Hyperparameteres tunning" 
+#| echo: false
+#| warning: false
+
+# ElasticNet models -Tunning hyperparameteres
+plot(elasticNet_glmnet_cv_caret)
+```
+
+### Resampling AUCs
+
+```{r}
+#| label: fig-FSResampledAUCs
+#| fig-cap: "Lasso and ElasticNet Train resampled AUCs"
+#| echo: false
+
+# Visualizing a set of resampling results of lasso and elastic Net caret train
+compare_lasso_elastic = resamples(list(Lasso = lasso_glmnet_cv_caret, 
+                                       ElasticNet = elasticNet_glmnet_cv_caret))
+bwplot(compare_lasso_elastic, metric = "ROC")
+```
+
+\clearpage
+
+### Important Variables
+
+```{r}
+#| label: tbl-varIMP
+#| tbl-cap: "Lasso and ElasticNet VarIMP Features Index Table"
+#| echo: false
+
+# Lasso and ElasticNet VarImp Features Table
+# Merge the data frames based on 'Features' column
+varIMP_lasso_EM = merge(lasso_varIMP, elasticNet_varIMP, 
+                         by = 'Features', all = TRUE)
+
+# Rename the 'Overall' columns
+varIMP_lasso_EM = varIMP_lasso_EM |>
+                  rename(Lasso_Overall = Overall.x,
+                  ElasticNet_Overall = Overall.y) |>
+                  arrange(desc(Lasso_Overall), desc(ElasticNet_Overall))
+
+knitr::kable(varIMP_lasso_EM, booktabs = T, digits = 2 ) |>
+kable_styling(latex_options = "hold_position")
+
+```
+
+```{r saveLassoSelectedFeaturesData, echo=FALSE}
+# Save data for GLM and SVM Model fitting in project folder '/data' as .RData format.
+save(thyroidData_lasso, file = "data/thyroidData_lasso.RData")
+```
+
+\clearpage
+
+# Model Fitting and Tuning
+
+For GLM, SVM and RF model fitting and also tuning hyper-parameters, the R caret package and 5-fold cross-validation 5 times resampling is used. See section @sec-resampling. Performance metric 'ROC' is chosen. See section @sec-outcomevar. Predictors selected for GLM and SVM Model fitting are based on LASSO feature selection. See @sec-EvaFS and @tbl-varIMP.
+
+```{r function_cal_metric, echo=FALSE}
+# Function to get  Model performance metrics from Input object Confusion Matrix.
+# Metrics parameters :
+# 1. True Negative, 2. False Positive, 3. False Negative, 4. True Positive,
+# 5. Precision, 6. Recall Score, 7. F1, 8. Accuracy 9. Specificity 10. Sensitivity
+
+get_err_metric = function(cm) {
+  # Get model metrics parameters from confusion Matrix object.
+  metric = list(TN = cm$table[1,1],    # True Negative
+                FP = cm$table[2,1],    # False Positive
+                FN = cm$table[1,2],    # False Negative
+                TP = cm$table[2,2],    # True Positive 
+                # Precision
+                Precision = round(cm$byClass[["Precision"]],2), 
+                # Recall
+                Recall_Score = round(cm$byClass[["Recall"]], 2), 
+                # F1
+                F1_Score = round(cm$byClass[["F1"]],2),
+                # Accuracy
+                Accuracy = round(cm$overall[["Accuracy"]],2),
+                # Specificity
+                Specificity = round(cm$byClass[["Specificity"]],2),
+                # Sensitivity
+                Sensitivity = round(cm$byClass[["Sensitivity"]],2))
+  
+  # Return list.
+  return(metric)
+}
+```
+
+## GLM
+
+Interpretation :
+
+• TSH : For every unit increase in TSH, the log-odds ofhaving thyroid disease increase by 6.12.
+
+• T3 : For every unit increase in T3, the log-odds of havingthyroid disease increase by 4.72.
+
+• Tumor : Having Tumor increase the log-odds of havingThyroid disease by 1.81
+
+• undergone thyroid surgery reduces the log-odds of havingthyroid disease by 11.18.
+
+• High TSH, T3, FTI, and the presence of a tumorincrease the risk of Thyroid disease.
+
+• Medical interventions (Thyroid Surgery and ThyroxinUsage) reduce the risk Thyroid disease.
+
+```{r glm_fullModel}
+
+# GLM Full model fitting
+set.seed(12356)
+glm_train_full = train(thyroid ~ ., data = thyroidData,
+                        method = "glm", metric = "ROC",
+                        trControl = fitCtrl) # 5 fold cv 5 times
+
+```
+
+```{r glm_lasso}
+# GLM model fitting
+set.seed(12356)
+glm_train_lasso = train(thyroid ~ ., data = thyroidData_lasso,
+                        method = "glm", metric = "ROC",
+                        trControl = fitCtrl) # 5 fold cv 5 times
+```
+
+```{r glm_finalModel, echo=FALSE}
+
+# Print final GLM model.
+# print(glm_train_lasso$finalModel)
+summary(glm_train_lasso)
+```
+
+```{r glm_roc_cal, echo=FALSE, warning=FALSE, message=FALSE}
+# Get ROC
+# Extract predicted probabilities for positive class and Observation
+glm_roc_lasso = roc(response = glm_train_lasso$pred$obs,
+                    predictor = glm_train_lasso$pred$Yes)
+
+glm_roc_full = roc(response = glm_train_full$pred$obs,
+                    predictor = glm_train_full$pred$Yes)
+```
+
+```{r glm_metric, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Get Confusion Matrix - Aggregate 
+glm_CM_lasso = confusionMatrix(glm_train_lasso$pred$pred,
+                               glm_train_lasso$pred$obs, 
+                               mode = "everything",
+                               positive = "Yes")
+
+glm_CM_full = confusionMatrix(glm_train_full$pred$pred,
+                               glm_train_full$pred$obs, 
+                               mode = "everything",
+                               positive = "Yes")
+
+# Get Model performance Parameteres
+glm_metric_lasso = get_err_metric(glm_CM_lasso)
+glm_metric_lasso = c(glm_metric_lasso, AUC = round(glm_roc_lasso$auc, 3))
+
+glm_metric_full = get_err_metric(glm_CM_full)
+glm_metric_full = c(glm_metric_full, AUC = round(glm_roc_full$auc, 3))
+
+
+```
+
+\clearpage
+
+## SVM
+
+The SVM model is a C-Support Vector Classification (C-svc) model. It uses the Gaussian Radial Basis kernel function.
+
+-   Best Tune Hyperparameters :
+
+Grid = \[ C(0.25, 1, 1.5, 2, 5), Sigma(0, 0.5, 1, 1.5) \]
+
+Cost = 0.25, Sigma = 0.5
+
+-   Cost : Cost is smaller, indicate more tolerant of violation to margin, relatively wider margin.
+
+-   Sigma: Sigma is small, implies complex and less smoothness in decision boundary (hyperplane).
+
+-   Number of Support Vector : 1305 data point that define decision boundary (hyperplane). Higher number indicate complex decision boundary.
+
+### Full Model - Hyper-parameter Tuning
+
+```{r svm_model_tune_full}
+
+# SVM tune Grid as per selected method.
+svm_grid = expand.grid(sigma = seq(0.0, 1.5, 0.5),
+                       C = c(.25, 5, 1, 1.5, 2))
+
+# SVM model with performance Metrics is ROC
+# Full model without feature selection 
+set.seed(12356)
+svm_tune_train_full = train(thyroid ~ ., 
+                       data = thyroidData,
+                       method = "svmRadial",
+                       preProcess = c("center", "scale"),
+                       trControl = fitCtrl,
+                       tuneGrid = svm_grid,
+                       metric = "ROC")
+
+```
+
+```{r}
+#| label: fig-svm_full_tunning
+#| fig-cap: "SVM Full model - Hyperparameteres tunning" 
+#| echo: false
+#| warning: false
+
+# SVM full models -Tunning hyperparameteres
+plot(svm_tune_train_full)
+```
+
+### Full Model - Model Fitting
+
+```{r svm_full_model}
+
+# Final SVM Full model with selected best tune parameter.
+set.seed(12356)
+svm_train_full = train(thyroid ~ ., 
+                       data = thyroidData,
+                       method = "svmRadial",
+                       preProcess = c("center", "scale"),
+                       trControl = fitCtrl,
+                       tuneGrid = expand.grid(
+                                  sigma = svm_tune_train_full$bestTune$sigma,
+                                  C = svm_tune_train_full$bestTune$C),
+                       metric = "ROC")
+
+```
+
+### Hyper-parameter Tuning
+
+```{r svm_model_tune_lasso}
+
+# SVM tune Grid as per selected method.
+svm_grid = expand.grid(sigma = seq(0.0, 1.5, 0.5),
+                       C = c(.25, 5, 1, 1.5, 2))
+
+# SVM model with performance Metrics is ROC
+# Currently selected variables are from lasso.
+set.seed(12356)
+svm_tune_train_lasso = train(thyroid ~ ., 
+                       data = thyroidData_lasso,
+                       method = "svmRadial",
+                       preProcess = c("center", "scale"),
+                       trControl = fitCtrl,
+                       tuneGrid = svm_grid,
+                       metric = "ROC")
+```
+
+```{r}
+#| label: fig-svm_lasso_tunning
+#| fig-cap: "SVM Lasso model - Hyperparameteres tunning" 
+#| echo: false
+#| warning: false
+
+# SVM Lasso models -Tunning hyperparameteres
+plot(svm_tune_train_lasso)
+```
+
+### Model Fitting
+
+```{r svm_lasso}
+
+# Final SVM model with selected best tune parameter.
+set.seed(12356)
+svm_train_lasso = train(thyroid ~ ., 
+                       data = thyroidData_lasso,
+                       method = "svmRadial",
+                       preProcess = c("center", "scale"),
+                       trControl = fitCtrl,
+                       tuneGrid = expand.grid(
+                                  sigma = svm_tune_train_lasso$bestTune$sigma,
+                                  C = svm_tune_train_lasso$bestTune$C),
+                       metric = "ROC")
+```
+
+```{r svm_finalModel}
+
+# Print SVM final model
+print(svm_train_lasso$finalModel)
+```
+
+```{r svm_roc_cal, echo=FALSE, warning=FALSE, message=FALSE}
+# Get ROC
+# Extract predicted probabilities for positive class and Observation
+svm_roc_lasso = roc(response = svm_train_lasso$pred$obs,
+                    predictor = svm_train_lasso$pred$Yes)
+
+svm_roc_full = roc(response = svm_train_full$pred$obs,
+                    predictor = svm_train_full$pred$Yes)
+```
+
+```{r svm_meritc, message=FALSE, echo=FALSE}
+
+# Get Confusion Matrix - Aggregate
+svm_CM_lasso = confusionMatrix(svm_train_lasso$pred$pred,
+                               svm_train_lasso$pred$obs, 
+                               mode = "everything",
+                               positive = "Yes")
+# Get Model performance parameteres
+svm_metric_lasso = get_err_metric(svm_CM_lasso) 
+svm_metric_lasso = c(svm_metric_lasso, AUC = round(svm_roc_lasso$auc, 3))
+
+# Full Model Get Confusion Matrix - Aggregate
+svm_CM_full = confusionMatrix(svm_train_full$pred$pred,
+                               svm_train_full$pred$obs, 
+                               mode = "everything",
+                               positive = "Yes")
+
+# Full Model Get Model performance parameteres
+svm_metric_full = get_err_metric(svm_CM_full) 
+svm_metric_full = c(svm_metric_full, AUC = round(svm_roc_full$auc, 3))
+
+```
+
+\clearpage
+
+## Random Forest
+
+Here are the key points of final model based on best tune 'mtry' value;
+
+-   Number of Trees: The model consists of 600 decision trees.
+
+-   mtry: This parameter specifies the number of variables tried at each split. In this case, 17 variables are considered at each split during tree building.
+
+-   OOB (Out-of-Bag) Error Rate: The OOB estimate of the error rate is a cross-validation technique specific to Random Forests. It estimates the model's performance on unseen data (samples not used during the tree construction). In this case, the OOB error rate is approximately 1.35%, which is very low and indicates a well-performing model.
+
+As per Gini Index @fig-modelEva-2, The feature "TSH" has the highest importance value, followed by "FTI", "on_thyroxineTrue", "TT4" and so on. These features are the most important in making predictions. The feature "referral_sourceWEST" and "hypopituitaryTrue" have importance values of 0, which suggests that they are not be relevant for making predictions.
+
+The corresponding Area Under the Curve (AUC) value was 0.99 indicating its ability to discriminate between the two classes. A precision of 0.94 indicates that when the model predicts a positive class (Yes), it is correct 94% of the time. See @tbl-modelPerformance. in @sec-evaluation.
+
+```{r rf_Model}
+
+# Method 'rf' tuning parameter 'mtry'
+# Set grid for tuning parameter 'mtry'.
+rf_grid = expand.grid(mtry = 1:(ncol(thyroidData)-1))
+
+set.seed(12356)
+# Random Forest model fitting.
+rf_train = train(thyroid ~ ., 
+                 data = thyroidData,
+                 method = "rf", 
+                 preProcess = c("center", "scale"),
+                 trControl = fitCtrl,
+                 tuneGrid = rf_grid,
+                 ntree = 600,
+                 metric = "ROC")
+```
+
+```{r rf_finalModel, echo=FALSE}
+ # Print final RF Model
+print(rf_train$finalModel)
+```
+
+```{r rf_roc_cal, echo=FALSE, message=FALSE}
+# Get CV resamples of best Tune parameter 
+rf_besttune_cv_pred = rf_train$pred |> 
+                      filter(mtry == rf_train$bestTune$mtry) |>
+                      dplyr::arrange(Resample)
+
+# Get ROC
+# Extract predicted probabilities for positive class and Observation
+rf_roc = roc(response = rf_besttune_cv_pred$obs, 
+             predictor = rf_besttune_cv_pred$Yes)
+```
+
+```{r rf_metric, echo=FALSE}
+
+# Get Confusion Matrix - from CV resamples of best Tune parameter
+rf_CM = confusionMatrix(rf_besttune_cv_pred$pred,
+                        rf_besttune_cv_pred$obs, 
+                        mode = "everything",
+                        positive = "Yes")
+
+# Get Model performance Parameteres
+rf_metric = get_err_metric(rf_CM)
+rf_metric = c(rf_metric, AUC = round(rf_roc$auc, 3))
+```
+
+```{r}
+#| label: fig-rf
+#| fig-cap: "RF Plots"
+#| fig-subcap:
+#|   - "RF Tuning parameter and Resampling ROC"
+#|   - "RF Gini Index"
+#| fig-height: 7
+#| fig-width: 7
+#| layout-ncol: 2
+#| echo: false
+
+# Plot RF Tuning parameters performance during CV
+plot(rf_train)
+
+# Plot Gini Index
+par(mar = c(6, 6, 4, 2))
+plot(varImp(rf_train, scale = FALSE, type = 2),
+     xlab = "Gini Importance")
+```
+
+\clearpage
+
+# Model Evaluation {#sec-evaluation}
+
+Based on the performance metrics summary, ROC plots of 3 models and Resampling AUCs summarize the evaluation as follows: (See models evaluation @tbl-modelPerformance and @fig-modelEva-1 )
+
+-   **Metric :** Random Forest performed best in terms of all performance metrics.
+
+-   **Precision:** Random Forest correctly predicts with 94% accuracy whether a person has thyroid, minimizing false positives.
+
+    -   Likelihood false Thyroid diagnosis is less than other models.
+
+-   **Recall :** The Random Forest model correctly predicted True Positive cases with an accuracy of 92%.
+
+    -   Likelihood failure to diagnose is less than other models.
+
+-   **ROC Plot:** Random Forest has highest AUC. Indicate 99.7% probability of correctly distinguishing instances in different classes. RF has more likely less False Positive case as best threshold of RF Model is higher than GLM and SVM.
+
+-   **Resampling AUCs:** Random Forest consistently performed well across different validation folds. (See @fig-modelEva-2). This indicates that the Random Forest model generalizes better and is less sensitive to different data splits.
+
+Considering feature selection, TSH is most important feature in both Random Forest and Lasso model.
+
+Predictors TT4 and T4U are eliminated by Lasso for GLM and SVM. However the random forest model showed high Gini Index values for predictor TT4 and T4U, indicating their substantial importance in predictive modeling. (See Lasso varIMP @tbl-varIMP and RF Gini Index @fig-rf-2)
+
+```{r model_evaluation, echo=FALSE}
+
+# Resampling summary of Model GLM , SVM and SVM
+model_train = list (GLM = glm_train_lasso,
+                    GLM_Full = glm_train_full,
+                    SVM = svm_train_lasso,
+                    SVM_Full = svm_train_full,
+                    RF = rf_train)
+
+model_resamp = resamples(model_train)
+
+#Print summary of resampling
+# summary(model_resamp)
+```
+
+```{r}
+#| label: tbl-modelPerformance
+#| tbl-cap: "Model Performance Metric"
+#| echo: false
+
+# List of Model performance parameters for all 3 Models
+
+# Create the model_performance list
+model_performance = list(GLM = glm_metric_lasso,
+                        SVM = svm_metric_lasso,
+                        RF = rf_metric)
+
+# Compare RF with Full GLM and SVM
+model_performance_full = list(GLM = glm_metric_full,
+                        SVM = svm_metric_full,
+                        RF = rf_metric)
+
+# Convert model_performance list to a data frame
+model_performance_df = do.call(rbind, model_performance)
+model_performance_full_df = do.call(rbind, model_performance_full)
+
+ # Set row names as model names
+row.names(model_performance_df) = names(model_performance)
+row.names(model_performance_full_df) = names(model_performance_full)
+
+# Table of Performance metircses for model GLM, SVM and RF
+#Summary table
+knitr::kable(model_performance_df, digits=2, booktabs = T) |>
+      kable_styling(latex_options = c("hold_position","striped", "scale_down" ))
+
+```
+
+```{r}
+#| label: tbl-modelPerformance_full
+#| tbl-cap: "Model Performance Metric Full vs RF"
+#| echo: false
+
+# Table of Performance metircses for model Full GLM, Full SVM and RF
+#Summary table
+knitr::kable(model_performance_full_df, digits=2, booktabs = T) |>
+      kable_styling(latex_options = c("hold_position","striped", "scale_down" ))
+```
+
+```{r}
+#| label: fig-modelEva
+#| fig-cap: "Model Evaluation Plots"
+#| fig-subcap:
+#|    - "Plot ROC"
+#|    - "Plot Resampling AUCs"
+#| layout-ncol: 2
+#| echo: false
+
+#Plot GLM, SVM and RF ROC in same plot to compare.
+plot.new()
+plot(glm_roc_lasso,
+     print.auc=TRUE,
+     print.auc.x =0.5, print.auc.y=0.5, 
+     print.thres = "best",  print.thres.cex = 0.7,
+     print.thres.col = "red",
+     print.auc.col="red",
+     col="red")
+
+plot(svm_roc_lasso, add=TRUE,
+     print.auc=TRUE,
+     print.auc.y=0.35,
+     print.thres = "best",  print.thres.cex = 0.7,
+     print.thres.adj = c(1.1, 1.25),
+     print.thres.col = "blue",
+     col="blue")
+plot(rf_roc, add=TRUE,
+     print.auc=TRUE,
+     print.auc.y=0.2,
+     print.thres = "best", print.thres.cex = 0.7, 
+     print.thres.adj = c(1.1, 0.2),
+     print.thres.col = "green",
+     col="green")
+
+legend("bottomright",
+       legend = c("GLM", "SVM", "RF"),
+       col = c("red", "blue", "green"), lwd = 1)
+
+# Resampling AUCs comparison Box Plot for all three models
+bwplot(model_resamp, metric = "ROC")
+```
+
+{{< pagebreak >}}
+
+```{r}
+#| label: tbl-varIMP_Lasso_RF
+#| tbl-cap: "Random Forest and Lasso VarIMP Features Index Table"
+#| echo: false
+
+# Get Var Imp features from RF
+rf_varIMP = varImp(rf_train)$importance |>
+            rownames_to_column(var="Features") |>
+            arrange(desc(Overall))
+
+# "Random Forest and Lasso VarImp Features Table
+# Merge the data frames based on 'Features' column
+varIMP_rf_lasso = merge(rf_varIMP, lasso_varIMP, 
+                         by = 'Features', all = TRUE)
+
+# Rename the 'Overall' columns
+varIMP_rf_lasso = varIMP_rf_lasso |>
+                  rename(RF_Overall = Overall.x,
+                  Lasso_Overall = Overall.y) |>
+                  arrange(desc(RF_Overall), desc(Lasso_Overall))
+
+knitr::kable(varIMP_rf_lasso, booktabs = T, digits = 2 ) |>
+kable_styling(latex_options = "hold_position")
+```
+
+# Conclusion
+
+-   Random Forest model is the most favorable choice for predictive modeling in this data context.
+
+-   Model Interpretation is more complex compared to GLM.
+
+-   Blood test parameter 'TSH' is the most important feature for predicting Thyroid disease in context of this data.
+
+Data Modeling is often an iterative process. This prediction model comparison can be used as baseline for further model enhancements for this data. For example, alternative predictive models or when additional data is collected.
+
+\clearpage
+
+# Appendix
+
+## Statistical Summary after Data Cleanup {#sec-statSummary}
+
+```{r}
+#| label: tbl-statSummaryNum
+#| tbl-cap: "Statstical Summary of Numerical Variables"
+#| tbl-cap-location: top
+#| echo: false
+
+#########
+# Package gtSummary
+########
+
+# Numerical, Categorical predictors and Outcome Var names vector.
+num_var = cleanThyroidData |> select_if(is.numeric) |> colnames()
+cat_var = cleanThyroidData |> select_if(is.factor) |> dplyr::select(!(1)) |> colnames()
+outcome_var = cleanThyroidData |> dplyr::select(1) |> colnames()
+
+# Statistical summary table for Continuous Variable group by outcome variable "thyroid"
+# Descriptive Statistics : sum, Mean, SD, Median, Q1, Q3, Range, Missing values.
+summaryTab_Num = cleanThyroidData |>
+                 dplyr::select(num_var, thyroid) |>
+                 tbl_summary(
+                   by = thyroid,
+                   type = all_continuous() ~ "continuous2",
+                   statistic = all_continuous() ~ c(
+                     "{mean} ({sd})",
+                     "{median}",
+                     "{p25}, {p75}",
+                     "{min}, {max}"
+                     ),
+                   missing = "always",
+                   missing_text = "Missing") |>
+                 add_n() |>
+                 add_overall() |>
+                 modify_header(label ~ "Variable") |>
+                 modify_spanning_header(c("stat_1", "stat_2") ~ "**Thyroid**") |>
+                 bold_labels()
+
+# Print Summary table
+summaryTab_Num |> as_kable_extra(longtable = TRUE, 
+                                 booktabs = TRUE, 
+                                 linesep = "") |>
+                 kableExtra::kable_styling(latex_options = 
+                                          c("striped", "repeat_header"))
+```
+
+```{r}
+#| label: tbl-statSummaryCat
+#| tbl-cap: "Statstical Summary of Catagorical Variables"
+#| tbl-cap-location: top
+#| echo: false
+
+# Statistical summary table for Categorical Variable group by outcome variable "thyroid"
+# Statistics : Frequency, Total, Frequency in %, Missing values.
+summaryTab_Cat = cleanThyroidData|>
+                 dplyr::select(cat_var, thyroid) |>
+                 tbl_summary(
+                   by = thyroid,
+                   statistic = all_categorical() ~ c(
+                     "{n} / {N} ({p}%)"
+                     ),
+                   missing = "always",
+                   missing_text = "Missing") |>
+                 add_n() |>
+                 add_overall() |>
+                 modify_header(label ~ "Variable")  |>
+  
+                 modify_spanning_header(c("stat_1", "stat_2") ~ "**Thyroid**") |>
+                 bold_labels()
+                
+# Print Summary table
+summaryTab_Cat |> as_kable_extra(longtable = TRUE, 
+                                 booktabs = TRUE, 
+                                 linesep = "") |>
+                 kableExtra::kable_styling(latex_options = 
+                                          c("striped", "repeat_header"))
+```
+
+\clearpage
+
+## Unit Test
+
+### function create_thyroid_variable() {#sec-unitTest1}
+
+```{r unitTest_createVariable}
+
+# Test 1: Verify range of newly created variable. 
+testthat::test_that("Test levels of new Outcome variable", {
+expect_equal(range(rawThyroidData$thyroid), c(0,1))
+})
+
+# Test 2: Verify thyroid values for target values with disease code.
+test_that("Test correctly assigns thyroid values", {
+  raw_data = data.frame(target = c("B", "D", "G", "I", "A", "H", "C"))
+  expected_data = data.frame(target = c("B", "D", "G", "I", "A", "H", "C"),
+                              thyroid = c(1, 1, 1, 0, 1, 1, 1))
+  
+  result = create_thyroid_variable(raw_data)
+  
+  expect_identical(result, expected_data)
+})
+
+
+# Test3:Verify thyroid values for target values with combinations of disease code.
+test_that("Test values with combinations of letters", {
+  raw_data = data.frame(target = c("-", "E", "F", "GKJ", "C|I", "OI"), 
+                        stringsAsFactors = FALSE)
+  expected_data = data.frame(target = c("-","E", "F", "GKJ", "C|I", "OI"),
+                              thyroid = c(0, 1, 1, 1, 1, 0), 
+                             stringsAsFactors = FALSE)
+  
+  result = create_thyroid_variable(raw_data)
+  
+  expect_identical(result, expected_data)
+})
+
+```
+
+### Factor conversion levels() {#sec-unitTest2}
+
+```{r unitTest_factorlevel}
+# Unit Test: Verify factor level
+testthat::test_that("correct levels of a factor", {
+expect_equal(levels(cleanThyroidData$sick), c("False", "True"))
+expect_equal(levels(cleanThyroidData$sex), c("Female", "Male"))
+expect_equal(levels(cleanThyroidData$thyroid), c("No", "Yes"))
+})
+```
+
+{{< pagebreak >}}
+
+## RunTime Error - Stepwise Selection {#sec-FSErrorSVM}
+
+### SVM - AICstep() {#sec-AICstep_SVM}
+
+```{r svm_AICstep, warning=FALSE}
+
+# # Fund best tune hyperparamtere for Full SVM model.
+# 
+# # Step 1: Split data into training and testing sets
+# set.seed(12356)
+# training.samples = thyroidData$thyroid |>
+#   createDataPartition(p = 0.7, list = FALSE)
+# train_data  = thyroidData[training.samples, ]
+# test_data = thyroidData[-training.samples, ]
+# 
+# # Step 2: Define parameter grid
+# param_grid = expand.grid(
+#   C = c(0.1, 1, 10),
+#   kernel = c("linear", "polynomial", "radial")
+# )
+# 
+# # Step 3: Initialize variables
+# best_auc = 0
+# best_params = NULL
+# 
+# # Step 4-6: Grid search
+# for (i in 1:nrow(param_grid)) {
+#   # Step 4: Fit SVM model
+#   model = svm(thyroid ~ ., data = train_data,
+#                kernel = param_grid$kernel[i],
+#                cost = param_grid$C[i])
+# 
+#   # Step 5: Evaluate model on testing data
+#   predictions = predict(model, newdata = test_data, type = "response")
+# 
+#   # Calculate ROC
+#   roc = roc(as.numeric(test_data$thyroid), as.numeric(predictions))
+#   auc = auc(roc)
+# 
+#   # Step 6: Update best parameters if necessary
+#   if (auc > best_auc) {
+#     best_auc = auc
+#     best_params = param_grid[i, ]
+#   }
+# }
+# 
+# # Step 7: Train final model with best parameters
+# svmFullModel = svm(thyroid ~ ., data = train_data,
+#                    kernel = best_params$kernel,
+#                    cost = best_params$C)
+# 
+# # Fit the backward stepwise model
+# stepModelSVM = svmFullModel |> stepAIC(direction = "backward")
+```
+
+{{< pagebreak >}}
+
+### SVM - REF() {#sec-RFESVM}
+
+```{r SVM_REF}
+
+# ################
+# # RFE  # Error in { : task 1 failed - "dim(X) must have a positive length"
+# ################
+# #Predictor variables
+
+# # ## Use function as 'caretFuncs' for RFE to get ROC as summary metrics.
+# # # and assign twoClassSummary function summary function of caretFuncs.
+#    caretFuncs$summary = twoClassSummary
+# 
+# # # # RFE Train with Metric: ROC and CV : 5
+# svm_RfeCtrl = rfeControl(functions = caretFuncs,
+#                      rerank = TRUE,
+#                      method="cv",
+#                      number = 5,
+#                      #repeats = 5,
+#                      saveDetails = TRUE,
+#                      returnResamp = "all")
+# 
+# 
+# set.seed(12356)
+# svm_RfeTrain = rfe(
+#             #x = x,
+#             #y = y,
+#             thyroid ~ . ,
+#             data = thyroidData,
+#             sizes = c(1:12),
+#             preProcess = c("center", "scale"),
+#             method = "svmRadial",
+#             metric = "ROC",
+#             #trControl = fsCtrl,
+#             rfeControl = svm_RfeCtrl)
+
+```
