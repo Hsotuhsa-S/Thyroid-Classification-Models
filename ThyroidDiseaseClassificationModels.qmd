@@ -121,7 +121,7 @@ save(rawThyroidData, file = "data/rawThyroidData.RData")
 
 Convert category variables to factor.
 
-```{r factor}
+```{r factor, echo=FALSE}
 
 # Get vector of column names with type 'character'
 columns_to_convert = names(rawThyroidData)[sapply(rawThyroidData, is.character)]
@@ -622,6 +622,22 @@ AICstep() and RFE() functions were explored, but both encountered runtime errors
 
 *"Error in { : task 1 failed -"dim(X) must have a positive length"*
 
+### **Resampling** {#sec-resampling}
+
+5-fold cross validation 5 times resampling is used throughout this project due to the imbalanced nature of the outcome variable and a moderate sample size. Although this method helps address class imbalance and provides robust performance evaluation and assess the variance in model performance. However it may require increased computational time and resource utilization.
+
+Stratified Randomization sampling based on Response variable is used. Preserve the response variable class proportion in train and test or cross validation folders dataset same as original dataset.
+
+```{r model_TrainControl, echo=FALSE}
+# 5-fold cross validation 5 times.
+fitCtrl = trainControl(method = "repeatedcv",
+                       number = 5,
+                       repeats = 5,
+                       classProbs = TRUE,
+                       savePredictions = TRUE,
+                       summaryFunction = twoClassSummary)
+```
+
 ## Regularization
 
 To address limitations of stepwise selection (see @sec-stepwise), evaluated regularization approach using 'caret' and 'glmnet' packages. Observed following benefits over stepwise selections.
@@ -642,23 +658,7 @@ Lasso and Elastic Net regularization are performed using package 'glmnet' and 'c
 2a. Set 'lambda' Grid from values generated in Step 1.\
 2b. Perform caret train() with cross-validation.
 
-### **Resampling** {#sec-resampling}
-
-5-fold cross validation 5 times resampling is used throughout this project due to the imbalanced nature of the outcome variable and a moderate sample size. Although this method helps address class imbalance and provides robust performance evaluation and assess the variance in model performance. However it may require increased computational time and resource utilization.
-
-Stratified Randomization sampling based on Response variable is used. Preserve the response variable class proportion in train and test or cross validation folders dataset same as original dataset.
-
-```{r model_TrainControl}
-# 5-fold cross validation 5 times.
-fitCtrl = trainControl(method = "repeatedcv",
-                       number = 5,
-                       repeats = 5,
-                       classProbs = TRUE,
-                       savePredictions = TRUE,
-                       summaryFunction = twoClassSummary)
-```
-
-### Lasso
+#### Lasso
 
 ```{r lasso_caret_cv_glmnet}
 
@@ -705,8 +705,7 @@ selected_features_lasso_index = varImp(lasso_glmnet_cv_caret)$importance |>
                                 filter(Overall != 0)
 ```
 
-
-### Elastic Net
+#### Elastic Net
 
 ```{r elasticNet_caret_cv_glmnet}
 
@@ -770,7 +769,7 @@ Evaluation Findings:
 
 When interpretability and a simpler model are of high importance, Lasso could be preferred. However, if multicollinearity is a major concern and preserving correlated features is essential, ElasticNet might be a better choice. Since Lasso increases interpretability and simplifies the model, Lasso is chosen.
 
-```{r dataset_lasso_GLM_SVMFitting}
+```{r dataset_lasso_GLM_SVMFitting, echo=FALSE}
 # Data set for Model fitting as per Lasso selected features. 
 # Parse the Lasso varIMP$Importance 
 selected_features_lasso = gsub("True|False|Male|Female", "",
@@ -786,23 +785,21 @@ thyroidData_lasso = thyroidData |>
 ```
 
 ```{r}
-#| label: fig-lasso_tunning
-#| fig-cap: "Lasso - Hyperparameteres tunning" 
+#| label: fig-lasso_elasticNet_tunning
+#| fig-cap: "Hyperparameteres tunning" 
+#| fig-subcap:
+#|    - "Lasso"
+#|    - "Elastic Net"
+#| layout-ncol: 2
 #| echo: false
 #| warning: false
 
 # Lasso models -Tunning hyperparameteres
 plot(lasso_glmnet_cv_caret)
-```
-
-```{r}
-#| label: fig-elasticnet_tunning
-#| fig-cap: "ElasticNet - Hyperparameteres tunning" 
-#| echo: false
-#| warning: false
 
 # ElasticNet models -Tunning hyperparameteres
 plot(elasticNet_glmnet_cv_caret)
+
 ```
 
 ### Resampling AUCs
@@ -896,11 +893,13 @@ Interpretation :
 
 • undergone thyroid surgery reduces the log-odds of havingthyroid disease by 11.18.
 
-• High TSH, T3, FTI, and the presence of a tumorincrease the risk of Thyroid disease.
+• High TSH, T3, FTI, and the presence of a tumor increase the risk of Thyroid disease.
 
 • Medical interventions (Thyroid Surgery and ThyroxinUsage) reduce the risk Thyroid disease.
 
-```{r glm_fullModel}
+### Full Model - Model Fitting
+
+```{r glm_fullModel_glm, echo=FALSE}
 
 # GLM Full model fitting
 set.seed(12356)
@@ -910,7 +909,16 @@ glm_train_full = train(thyroid ~ ., data = thyroidData,
 
 ```
 
-```{r glm_lasso}
+```{r glm_full_glm, echo=FALSE}
+
+# Print full GLM model.
+# print(glm_train_lasso$finalModel)
+summary(glm_train_full)
+```
+
+### Lasso Model - Model Fitting
+
+```{r glm_lasso, echo=FALSE}
 # GLM model fitting
 set.seed(12356)
 glm_train_lasso = train(thyroid ~ ., data = thyroidData_lasso,
@@ -918,9 +926,9 @@ glm_train_lasso = train(thyroid ~ ., data = thyroidData_lasso,
                         trControl = fitCtrl) # 5 fold cv 5 times
 ```
 
-```{r glm_finalModel, echo=FALSE}
+```{r glm_lasso_glm, echo=FALSE}
 
-# Print final GLM model.
+# Print lasso GLM model.
 # print(glm_train_lasso$finalModel)
 summary(glm_train_lasso)
 ```
@@ -960,6 +968,101 @@ glm_metric_full = c(glm_metric_full, AUC = round(glm_roc_full$auc, 3))
 
 \clearpage
 
+## Model Evaluation - Full vs Lasso Model of GLM
+
+Based on the performance metrics summary, ROC plots and Resampling AUCs summarize the evaluation of Full and lasso models as follows:
+
+-   **Metric :** Both Full and Lasso models metrics are almost same.
+
+-   **ROC Plot:** Lasso Model has highest AUC compare to full model. Indicate better probability of correctly distinguishing instances in different classes. Lasso Model has more likely less False Positive case as best threshold compare to Full model.
+
+-   **Resampling AUCs:** Lasso Model consistently performed well across different validation folds. This indicates that the Lasso Model model generalizes better and is less sensitive to different data splits.
+
+**Conclusion :**
+
+GLM Lasso model perform better than Full model. GLM Lasso model is selected for further evaluation.
+
+```{r model_evaluation_full-lasso_glm, echo=FALSE}
+
+# Resampling summary of Full and lasso Models of GLM.
+model_train_full_lasso_GLM = list (GLM_full = glm_train_full,
+                               GLM_lasso = glm_train_lasso)
+
+model_resamp_full_lasso_GLM = resamples(model_train_full_lasso_GLM)
+
+#Print summary of resampling
+# summary(model_resamp)
+```
+
+```{r}
+#| label: tbl-modelPerformance_Full-Lasso_GLM
+#| tbl-cap: "Model Performance Metric GLM Full vs lasso"
+#| echo: false
+
+# GLM Full vs Lasso: List of Model performance parameters
+
+# Create the model_performance list
+model_performance_full_lasso_glm = list(GLM_full = glm_metric_full,
+                                        GLM_lasso = glm_metric_lasso)
+
+# Compare RF with Full GLM and SVM
+# model_performance_full = list(GLM = glm_metric_full,
+#                               SVM = svm_metric_full,
+#                               RF = rf_metric)
+
+# Convert model_performance list to a data frame
+#model_performance_full_df = do.call(rbind, model_performance_full)
+model_performance_full_lasso_glm_df = do.call(rbind, model_performance_full_lasso_glm)
+
+# Set row names as model names
+# row.names(model_performance_full_df) = names(model_performance_full)
+row.names(model_performance_full_lasso_glm_df) = names(model_performance_full_lasso_glm)
+
+
+# Table of Performance metrics for model Full vs Lasso GLM
+# Summary table
+knitr::kable(model_performance_full_lasso_glm_df, digits=2, booktabs = T) |>
+      kable_styling(latex_options = c("hold_position","striped", "scale_down" ))
+
+```
+
+```{r}
+#| label: fig-modelEva_glm
+#| fig-cap: "GLM Model Evaluation Plots between Full and Lasso"
+#| fig-subcap:
+#|    - "Plot ROC GLM"
+#|    - "Plot Resampling AUCs GLM"
+#| layout-ncol: 2
+#| echo: false
+
+#Plot Full and lasso models of GLM ROC in same plot to compare.
+plot.new()
+plot(glm_roc_full,
+     print.auc=TRUE,
+     print.auc.x =0.6, print.auc.y=0.5, 
+     print.thres = "best",  print.thres.cex = 0.7,
+     print.thres.col = "pink",
+     print.auc.col="pink",
+     col="pink")
+plot(glm_roc_lasso, add=TRUE,
+     print.auc=TRUE,
+     print.auc.y=0.35, 
+     print.thres = "best",  print.thres.cex = 0.7,
+     print.thres.adj = c(1.1, 0.2),
+     print.thres.col = "red",
+     print.auc.col="red",
+     col="red")
+
+legend("bottomright",
+       legend = c("GLM-F", "GLM-L"),
+       col = c("pink", "red"), lwd = 1)
+
+# Resampling AUCs comparison Box Plot for Full and Lasso Models
+bwplot(model_resamp_full_lasso_GLM, metric = "ROC")
+```
+
+\clearpage
+
 ## SVM
 
 The SVM model is a C-Support Vector Classification (C-svc) model. It uses the Gaussian Radial Basis kernel function.
@@ -978,7 +1081,7 @@ Cost = 0.25, Sigma = 0.5
 
 ### Full Model - Hyper-parameter Tuning
 
-```{r svm_model_tune_full}
+```{r svm_model_tune_full, echo=FALSE}
 
 # SVM tune Grid as per selected method.
 svm_grid = expand.grid(sigma = seq(0.0, 1.5, 0.5),
@@ -1009,7 +1112,7 @@ plot(svm_tune_train_full)
 
 ### Full Model - Model Fitting
 
-```{r svm_full_model}
+```{r svm_full_model, echo=FALSE}
 
 # Final SVM Full model with selected best tune parameter.
 set.seed(12356)
@@ -1025,9 +1128,15 @@ svm_train_full = train(thyroid ~ .,
 
 ```
 
-### Hyper-parameter Tuning
+```{r svm_full_print, echo=FALSE}
 
-```{r svm_model_tune_lasso}
+# Print SVM full model
+print(svm_train_full$finalModel)
+```
+
+### Lasso Model - Hyper-parameter Tuning
+
+```{r svm_model_tune_lasso, echo=FALSE}
 
 # SVM tune Grid as per selected method.
 svm_grid = expand.grid(sigma = seq(0.0, 1.5, 0.5),
@@ -1055,9 +1164,9 @@ svm_tune_train_lasso = train(thyroid ~ .,
 plot(svm_tune_train_lasso)
 ```
 
-### Model Fitting
+### Lasso Model - Model Fitting
 
-```{r svm_lasso}
+```{r svm_lasso, echo=FALSE}
 
 # Final SVM model with selected best tune parameter.
 set.seed(12356)
@@ -1072,9 +1181,9 @@ svm_train_lasso = train(thyroid ~ .,
                        metric = "ROC")
 ```
 
-```{r svm_finalModel}
+```{r svm_finalModel, echo=FALSE}
 
-# Print SVM final model
+# Print SVM Lasso model
 print(svm_train_lasso$finalModel)
 ```
 
@@ -1113,6 +1222,100 @@ svm_metric_full = c(svm_metric_full, AUC = round(svm_roc_full$auc, 3))
 
 \clearpage
 
+## Model Evaluation - Full vs Lasso Model of SVM
+
+Based on the performance metrics summary, ROC plots and Resampling AUCs summarize the evaluation of Full and lasso models as follows:
+
+-   **Metric :** Both Full and Lasso models metrics are almost same.
+
+-   **ROC Plot:** Lasso Model has highest AUC compare to full model. Indicate better probability of correctly distinguishing instances in different classes. Lasso Model has more likely less False Positive case as best threshold compare to Full model.
+
+-   **Resampling AUCs:** Lasso Model consistently performed well across different validation folds. This indicates that the Lasso Model model generalizes better and is less sensitive to different data splits.
+
+**Conclusion :**
+
+SVM Lasso model perform better than Full model. GLM Lasso model is selected for further evaluation.
+
+```{r model_evaluation_full-lasso_svm, echo=FALSE}
+
+# Resampling summary of Full and lasso Models of SVM.
+model_train_full_lasso_SVM = list (GLM_full = svm_train_full,
+                               GLM_lasso = svm_train_lasso)
+
+model_resamp_full_lasso_SVM = resamples(model_train_full_lasso_SVM)
+
+#Print summary of resampling
+# summary(model_resamp)
+```
+
+```{r}
+#| label: tbl-modelPerformance_Full-Lasso_SVM
+#| tbl-cap: "Model Performance Metric SVM Full vs lasso"
+#| echo: false
+
+# SVM Full vs Lasso: List of Model performance parameters
+
+# Create the model_performance list
+model_performance_full_lasso_svm = list(SVM_full = svm_metric_full,
+                                    SVM_lasso = svm_metric_lasso)
+
+# Compare RF with Full GLM and SVM
+# model_performance_full = list(GLM = glm_metric_full,
+#                               SVM = svm_metric_full,
+#                               RF = rf_metric)
+
+# Convert model_performance list to a data frame
+#model_performance_full_df = do.call(rbind, model_performance_full)
+model_performance_full_lasso_svm_df = do.call(rbind, model_performance_full_lasso_svm)
+
+# Set row names as model names
+# row.names(model_performance_full_df) = names(model_performance_full)
+row.names(model_performance_full_lasso_svm_df) = names(model_performance_full_lasso_svm)
+
+# Table of Performance metrics for model Full vs Lasso svm
+# Summary table
+knitr::kable(model_performance_full_lasso_svm_df, digits=2, booktabs = T) |>
+      kable_styling(latex_options = c("hold_position","striped", "scale_down" ))
+
+```
+
+```{r}
+#| label: fig-modelEva_svm
+#| fig-cap: "SVM Model Evaluation Plots between Full and Lasso"
+#| fig-subcap:
+#|    - "Plot ROC SVM"
+#|    - "Plot Resampling AUCs SVM"
+#| layout-ncol: 2
+#| echo: false
+
+#Plot Full and lasso models of SVM ROC in same plot to compare.
+plot.new()
+plot(svm_roc_full,
+     print.auc=TRUE,
+     print.auc.x =0.6, print.auc.y=0.5, 
+     print.thres = "best",  print.thres.cex = 0.7,
+     print.thres.col = "blue",
+     print.auc.col="blue",
+     col="blue")
+plot(svm_roc_lasso, add=TRUE,
+     print.auc=TRUE,
+     print.auc.y=0.35, 
+     print.thres = "best",  print.thres.cex = 0.7,
+     print.thres.adj = c(1.1, 0.2),
+     print.thres.col = "red",
+     print.auc.col="red",
+     col="red")
+
+legend("bottomright",
+       legend = c("SVM-F", "SVM-L"),
+       col = c("blue", "red"), lwd = 1)
+
+# Resampling AUCs comparison Box Plot for Full and Lasso Models
+bwplot(model_resamp_full_lasso_SVM, metric = "ROC")
+```
+
+\clearpage
+
 ## Random Forest
 
 Here are the key points of final model based on best tune 'mtry' value;
@@ -1127,7 +1330,7 @@ As per Gini Index @fig-modelEva-2, The feature "TSH" has the highest importance 
 
 The corresponding Area Under the Curve (AUC) value was 0.99 indicating its ability to discriminate between the two classes. A precision of 0.94 indicates that when the model predicts a positive class (Yes), it is correct 94% of the time. See @tbl-modelPerformance. in @sec-evaluation.
 
-```{r rf_Model}
+```{r rf_Model, echo=FALSE}
 
 # Method 'rf' tuning parameter 'mtry'
 # Set grid for tuning parameter 'mtry'.
@@ -1197,9 +1400,9 @@ plot(varImp(rf_train, scale = FALSE, type = 2),
 
 \clearpage
 
-# Model Evaluation {#sec-evaluation}
+# Model Evaluation - GLM vs SVM vs RF {#sec-evaluation}
 
-Based on the performance metrics summary, ROC plots of 3 models and Resampling AUCs summarize the evaluation as follows: (See models evaluation @tbl-modelPerformance and @fig-modelEva-1 )
+Based on the performance metrics summary, ROC plots of 3 models and Resampling AUCs summarize the evaluation as follows: (See models evaluation @tbl-modelPerformance and @fig-modelEva-1)
 
 -   **Metric :** Random Forest performed best in terms of all performance metrics.
 
@@ -1223,9 +1426,7 @@ Predictors TT4 and T4U are eliminated by Lasso for GLM and SVM. However the rand
 
 # Resampling summary of Model GLM , SVM and SVM
 model_train = list (GLM = glm_train_lasso,
-                    GLM_Full = glm_train_full,
                     SVM = svm_train_lasso,
-                    SVM_Full = svm_train_full,
                     RF = rf_train)
 
 model_resamp = resamples(model_train)
@@ -1236,30 +1437,23 @@ model_resamp = resamples(model_train)
 
 ```{r}
 #| label: tbl-modelPerformance
-#| tbl-cap: "Model Performance Metric"
+#| tbl-cap: "Model Performance Metric RF vs GLM and SVM Lasso Model"
 #| echo: false
 
 # List of Model performance parameters for all 3 Models
 
 # Create the model_performance list
-model_performance = list(GLM = glm_metric_lasso,
-                        SVM = svm_metric_lasso,
-                        RF = rf_metric)
-
-# Compare RF with Full GLM and SVM
-model_performance_full = list(GLM = glm_metric_full,
-                        SVM = svm_metric_full,
-                        RF = rf_metric)
+model_performance = list(GLM_Lasso = glm_metric_lasso,
+                         SVM_Lasso = svm_metric_lasso,
+                         RF = rf_metric)
 
 # Convert model_performance list to a data frame
 model_performance_df = do.call(rbind, model_performance)
-model_performance_full_df = do.call(rbind, model_performance_full)
 
  # Set row names as model names
 row.names(model_performance_df) = names(model_performance)
-row.names(model_performance_full_df) = names(model_performance_full)
 
-# Table of Performance metircses for model GLM, SVM and RF
+# Table of Performance metrics for model GLM, SVM and RF
 #Summary table
 knitr::kable(model_performance_df, digits=2, booktabs = T) |>
       kable_styling(latex_options = c("hold_position","striped", "scale_down" ))
@@ -1268,10 +1462,21 @@ knitr::kable(model_performance_df, digits=2, booktabs = T) |>
 
 ```{r}
 #| label: tbl-modelPerformance_full
-#| tbl-cap: "Model Performance Metric Full vs RF"
+#| tbl-cap: "Model Performance Metric RF vs GLM and SVM Full Model"
 #| echo: false
 
-# Table of Performance metircses for model Full GLM, Full SVM and RF
+# Compare RF with Full GLM and SVM
+model_performance_full = list(GLM_Full = glm_metric_full,
+                              SVM_Full = svm_metric_full,
+                              RF = rf_metric)
+
+# Convert model_performance list to a data frame
+model_performance_full_df = do.call(rbind, model_performance_full)
+
+# Set row names as model names
+row.names(model_performance_full_df) = names(model_performance_full)
+
+# Table of Performance metrics for model Full GLM, Full SVM and RF
 #Summary table
 knitr::kable(model_performance_full_df, digits=2, booktabs = T) |>
       kable_styling(latex_options = c("hold_position","striped", "scale_down" ))
