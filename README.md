@@ -6,4 +6,5 @@ Goal to compare and evaluate three different models, namely Generalized Linear M
 # Conclusion : 
  • Random Forest model is the most favorable choice for predictive modeling in this data
  context.
+ 
  • Blood test parameter ‘TSH’ is  emerging as a key predictive feature for predicting Thyroid disease.
